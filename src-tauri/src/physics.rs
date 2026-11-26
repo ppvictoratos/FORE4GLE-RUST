@@ -16,17 +16,11 @@ impl Vec2 {
     }
 
     pub fn add(self, other: Vec2) -> Vec2 {
-        Vec2 {
-            x: self.x + other.x,
-            y: self.y + other.y,
-        }
+        Vec2 { x: self.x + other.x, y: self.y + other.y }
     }
 
     pub fn scale(self, scalar: f32) -> Vec2 {
-        Vec2 {
-            x: self.x * scalar,
-            y: self.y * scalar,
-        }
+        Vec2 { x: self.x * scalar, y: self.y * scalar }
     }
 
     pub fn magnitude(self) -> f32 {
@@ -35,14 +29,7 @@ impl Vec2 {
 
     pub fn normalize(self) -> Vec2 {
         let mag = self.magnitude();
-        if mag > 0.0 {
-            Vec2 {
-                x: self.x / mag,
-                y: self.y / mag,
-            }
-        } else {
-            Vec2::zero()
-        }
+        if mag > 0.0 { Vec2 { x: self.x / mag, y: self.y / mag } } else { Vec2::zero() }
     }
 
     pub fn dot(self, other: Vec2) -> f32 {
@@ -59,23 +46,18 @@ pub struct Ball {
 
 impl Ball {
     pub fn new(x: f32, y: f32) -> Self {
-        Ball {
-            position: Vec2::new(x, y),
-            velocity: Vec2::zero(),
-            radius: 8.0,
-        }
+        Ball { position: Vec2::new(x, y), velocity: Vec2::zero(), radius: 8.0 }
     }
 
+    /// Top-down rolling: no gravity, just friction, and a hard stop once it's crawling.
     pub fn update(&mut self, dt: f32) {
-        const GRAVITY: f32 = 400.0;
-        const FRICTION: f32 = 0.98;
+        const FRICTION_PER_60HZ_FRAME: f32 = 0.985;
+        const STOP_SPEED: f32 = 6.0;
 
-        self.velocity.y += GRAVITY * dt;
-        self.velocity = self.velocity.scale(FRICTION);
         self.position = self.position.add(self.velocity.scale(dt));
-    }
-
-    pub fn apply_force(&mut self, force: Vec2) {
-        self.velocity = self.velocity.add(force);
+        self.velocity = self.velocity.scale(FRICTION_PER_60HZ_FRAME.powf(dt * 60.0));
+        if self.velocity.magnitude() < STOP_SPEED {
+            self.velocity = Vec2::zero();
+        }
     }
 }

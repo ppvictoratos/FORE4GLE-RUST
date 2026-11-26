@@ -5,11 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>FORE4GLE - Mini Golf</title>
     <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
             display: flex;
             justify-content: center;
@@ -21,47 +17,27 @@
         .container {
             display: flex;
             flex-direction: column;
-            gap: 20px;
+            gap: 16px;
             align-items: center;
             padding: 20px;
         }
-        h1 {
-            color: white;
-            font-size: 2.5em;
-            display: flex;
-            gap: 10px;
-            align-items: center;
-        }
-        .flag {
-            font-size: 1.5em;
-        }
+        h1 { color: white; font-size: 2.5em; }
         canvas {
             border: 4px solid white;
             background: linear-gradient(180deg, #5dd962 0%, #3db13f 100%);
             cursor: grab;
             display: block;
+            max-width: 100%;
+            height: auto;
+            touch-action: none;
         }
-        canvas:active {
-            cursor: grabbing;
-        }
-        .info {
-            color: white;
-            text-align: center;
-            font-size: 1em;
-            max-width: 500px;
-        }
-        .info-text {
-            font-size: 0.9em;
-            margin: 5px 0;
-        }
-        .sunk-message {
-            font-size: 1.3em;
-            font-weight: bold;
-            color: #ffd700;
-            margin-top: 10px;
-        }
+        canvas:active { cursor: grabbing; }
+        .info { color: white; text-align: center; max-width: 750px; }
+        .info-text { font-size: 0.95em; margin: 4px 0; }
+        .sunk-message { font-size: 1.3em; font-weight: bold; color: #ffd700; margin-top: 8px; min-height: 1.6em; }
+        .buttons { display: flex; gap: 12px; justify-content: center; margin-top: 8px; }
         button {
-            padding: 12px 40px;
+            padding: 12px 32px;
             font-size: 1em;
             background: white;
             color: #2a2a2a;
@@ -69,234 +45,199 @@
             border-radius: 5px;
             cursor: pointer;
             font-weight: bold;
-            transition: transform 0.2s, box-shadow 0.2s;
-            margin-top: 10px;
         }
-        button:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 5px 15px rgba(0,0,0,0.3);
-        }
+        button[hidden] { display: none; }
+        button:hover { box-shadow: 0 5px 15px rgba(0,0,0,0.3); }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>FORE4GLE <span class="flag">🚩</span></h1>
+        <h1>FORE4GLE 🚩</h1>
         <canvas id="gameCanvas" width="750" height="700"></canvas>
         <div class="info">
+            <div class="info-text" id="holeInfo">Loading...</div>
             <div class="info-text">Drag back from the ball and release to shoot (slingshot)</div>
-            <div class="info-text">Strokes: <span id="strokes">0</span> | Ball Velocity: <span id="velocity">0.0</span></div>
-            <div id="sunkInfo"></div>
-            <button id="resetBtn">Reset Hole</button>
+            <div class="info-text">Strokes: <span id="strokes">0</span> | Velocity: <span id="velocity">0.0</span></div>
+            <div class="sunk-message" id="sunkInfo"></div>
+            <div class="buttons">
+                <button id="actionBtn" hidden></button>
+                <button id="resetBtn">Restart hole</button>
+            </div>
         </div>
     </div>
-
     <script>
-        let invoke;
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const strokesEl = document.getElementById('strokes');
+        const velocityEl = document.getElementById('velocity');
+        const holeInfoEl = document.getElementById('holeInfo');
+        const sunkInfoEl = document.getElementById('sunkInfo');
+        const actionBtn = document.getElementById('actionBtn');
+        const resetBtn = document.getElementById('resetBtn');
 
-        function initTauri() {
-            const tauri = window.__TAURI__;
-            if (!tauri) {
-                console.log('Waiting for Tauri...');
-                setTimeout(initTauri, 100);
-                return;
-            }
-            invoke = tauri.core.invoke;
-            console.log('Tauri ready');
-            startGame();
+        let gs = null;          // last GameState from Rust
+        let busy = false;
+        let drag = null;        // { start: {x,y}, now: {x,y} } while aiming
+        let invoke = null;
+
+        function scoreName(strokes, par) {
+            const d = strokes - par;
+            if (strokes === 1) return 'Hole in one';
+            if (d <= -2) return 'Eagle';
+            if (d === -1) return 'Birdie';
+            if (d === 0) return 'Par';
+            if (d === 1) return 'Bogey';
+            if (d === 2) return 'Double bogey';
+            return `+${d}`;
         }
 
-        initTauri();
-
-        function startGame() {
-            const canvas = document.getElementById('gameCanvas');
-            const ctx = canvas.getContext('2d');
-            const resetBtn = document.getElementById('resetBtn');
-            const strokesEl = document.getElementById('strokes');
-            const velocityEl = document.getElementById('velocity');
-            const sunkInfo = document.getElementById('sunkInfo');
-
-            let gameState = null;
-            let gameRunning = true;
-            let isDragging = false;
-            let dragStart = null;
-            let strokes = 0;
-
-        function getCanvasPos(e) {
+        function canvasPos(e) {
             const rect = canvas.getBoundingClientRect();
             return {
-                x: (e.clientX || e.touches?.[0].clientX) - rect.left,
-                y: (e.clientY || e.touches?.[0].clientY) - rect.top
+                x: (e.clientX - rect.left) * (canvas.width / rect.width),
+                y: (e.clientY - rect.top) * (canvas.height / rect.height)
             };
         }
 
-        function isOnBall(pos, ball) {
-            const dx = pos.x - ball.position.x;
-            const dy = pos.y - ball.position.y;
-            const dist = Math.sqrt(dx * dx + dy * dy);
-            return dist < ball.radius * 3;
+        function nearBall(p) {
+            const b = gs.ball.position;
+            return Math.hypot(p.x - b.x, p.y - b.y) < 30;
         }
 
-        canvas.addEventListener('mousedown', (e) => {
-            if (!gameState || !gameRunning) return;
-            const pos = getCanvasPos(e);
-            if (isOnBall(pos, gameState.ball)) {
-                isDragging = true;
-                dragStart = pos;
+        canvas.addEventListener('pointerdown', (e) => {
+            if (!gs || gs.ball_sunk !== null) return;
+            const p = canvasPos(e);
+            if (nearBall(p)) {
+                canvas.setPointerCapture(e.pointerId);
+                drag = { start: p, now: p };
             }
         });
 
-        canvas.addEventListener('mouseup', async (e) => {
-            if (!isDragging || !dragStart) return;
-            isDragging = false;
+        canvas.addEventListener('pointermove', (e) => {
+            if (drag) drag.now = canvasPos(e);
+        });
 
-            const endPos = getCanvasPos(e);
-            const dx = dragStart.x - endPos.x;
-            const dy = dragStart.y - endPos.y;
-            const power = Math.min(Math.sqrt(dx * dx + dy * dy) / 100, 1.0);
+        canvas.addEventListener('pointerup', async (e) => {
+            if (!drag) return;
+            const end = canvasPos(e);
+            const dx = drag.start.x - end.x;
+            const dy = drag.start.y - end.y;
+            const power = Math.min(Math.hypot(dx, dy) / 100, 1.0);
             const angle = Math.atan2(dy, dx);
-
+            drag = null;
             if (power > 0.05) {
                 await invoke('strike_ball', { angle, power });
-                strokes++;
-                strokesEl.textContent = strokes;
-                gameRunning = false;
-                setTimeout(() => { gameRunning = true; }, 2000);
+                gs = await invoke('get_game_state');
             }
-            dragStart = null;
         });
 
-        canvas.addEventListener('mouseleave', () => {
-            isDragging = false;
-            dragStart = null;
-        });
+        canvas.addEventListener('pointercancel', () => { drag = null; });
 
         resetBtn.addEventListener('click', async () => {
-            gameState = await invoke('reset_game');
-            gameRunning = true;
-            strokes = 0;
-            strokesEl.textContent = '0';
-            sunkInfo.innerHTML = '';
+            gs = await invoke('reset_game');
         });
 
-        async function initGame() {
-            gameState = await invoke('init_game');
-            console.log('Game State:', gameState);
-        }
+        actionBtn.addEventListener('click', async () => {
+            gs = await invoke('next_hole');
+        });
 
-        async function updateGame(dt) {
-            gameState = await invoke('update_game', { dt });
+        function updateUI() {
+            const hole = gs.hole_layout;
+            holeInfoEl.textContent = `Hole ${gs.hole_index + 1} of ${gs.hole_count}: ${hole.name} · Par ${hole.par}`;
+            strokesEl.textContent = gs.strokes;
+            velocityEl.textContent = Math.hypot(gs.ball.velocity.x, gs.ball.velocity.y).toFixed(1);
 
-            if (gameState.ball_sunk && gameRunning) {
-                gameRunning = false;
-                sunkInfo.innerHTML = `<div class="sunk-message">⭐ Hole in ${strokes}! ⭐</div>`;
+            if (gs.ball_sunk !== null) {
+                const last = gs.hole_index === gs.hole_count - 1;
+                if (last) {
+                    const total = gs.scores.reduce((a, s) => a + (s ?? 0), 0);
+                    sunkInfoEl.textContent = `🏆 Course complete: ${total} strokes`;
+                    actionBtn.textContent = 'Play again';
+                } else {
+                    sunkInfoEl.textContent = `⭐ ${scoreName(gs.strokes, hole.par)}! (${gs.strokes}) ⭐`;
+                    actionBtn.textContent = `Next hole (${gs.hole_index + 2})`;
+                }
+                actionBtn.hidden = false;
+            } else {
+                sunkInfoEl.textContent = '';
+                actionBtn.hidden = true;
             }
-
-            const speed = Math.sqrt(gameState.ball.velocity.x ** 2 + gameState.ball.velocity.y ** 2);
-            velocityEl.textContent = speed.toFixed(1);
         }
 
-        function drawGame() {
+        function draw() {
             ctx.clearRect(0, 0, canvas.width, canvas.height);
+            if (!gs) return;
 
-            // Debug canvas boundary
-            ctx.strokeStyle = 'rgba(255,0,0,0.2)';
-            ctx.lineWidth = 1;
-            ctx.strokeRect(0, 0, canvas.width, canvas.height);
-
-            if (!gameState) {
-                ctx.fillStyle = 'white';
-                ctx.font = '16px sans-serif';
-                ctx.fillText('Loading...', 20, 30);
-                return;
-            }
-
-            const layout = gameState.hole_layout;
-            const ball = gameState.ball;
-
-            // Draw walls
+            // Walls
             ctx.strokeStyle = '#000';
             ctx.lineWidth = 8;
             ctx.lineCap = 'round';
-            ctx.lineJoin = 'round';
-            for (const wall of layout.walls) {
+            for (const w of gs.hole_layout.walls) {
                 ctx.beginPath();
-                ctx.moveTo(wall.x1, wall.y1);
-                ctx.lineTo(wall.x2, wall.y2);
+                ctx.moveTo(w.x1, w.y1);
+                ctx.lineTo(w.x2, w.y2);
                 ctx.stroke();
             }
 
-            // Draw holes
-            for (const hole of layout.holes) {
-                const size = hole.radius * 2;
+            // Cup
+            for (const h of gs.hole_layout.holes) {
                 ctx.fillStyle = 'rgba(40, 120, 50, 0.8)';
-                ctx.save();
-                ctx.translate(hole.x, hole.y);
-                ctx.rotate(45 * Math.PI / 180);
-                ctx.fillRect(-size / 2, -size / 2, size, size);
-                ctx.restore();
-
+                ctx.beginPath();
+                ctx.arc(h.x, h.y, h.radius + 4, 0, Math.PI * 2);
+                ctx.fill();
                 ctx.fillStyle = '#1a1a2e';
                 ctx.beginPath();
-                ctx.arc(hole.x, hole.y, hole.radius * 0.8, 0, Math.PI * 2);
+                ctx.arc(h.x, h.y, h.radius * 0.8, 0, Math.PI * 2);
                 ctx.fill();
-
-                ctx.strokeStyle = 'rgba(255, 255, 255, 0.3)';
-                ctx.lineWidth = 2;
-                ctx.stroke();
             }
 
-            // Draw ball
+            // Ball
+            const b = gs.ball.position;
             ctx.fillStyle = '#fff';
             ctx.beginPath();
-            ctx.arc(ball.position.x, ball.position.y, ball.radius, 0, Math.PI * 2);
+            ctx.arc(b.x, b.y, gs.ball.radius, 0, Math.PI * 2);
             ctx.fill();
 
-            ctx.fillStyle = 'rgba(200, 200, 200, 0.4)';
-            ctx.beginPath();
-            ctx.arc(ball.position.x - 3, ball.position.y - 3, ball.radius * 0.4, 0, Math.PI * 2);
-            ctx.fill();
-
-            // Draw drag line
-            if (isDragging && dragStart) {
-                ctx.strokeStyle = 'rgba(255, 255, 255, 0.5)';
+            // Slingshot aim line
+            if (drag) {
+                ctx.strokeStyle = 'rgba(255,255,255,0.6)';
                 ctx.lineWidth = 2;
                 ctx.setLineDash([5, 5]);
                 ctx.beginPath();
-                ctx.moveTo(ball.position.x, ball.position.y);
-                ctx.lineTo(dragStart.x, dragStart.y);
+                ctx.moveTo(b.x, b.y);
+                ctx.lineTo(drag.now.x, drag.now.y);
                 ctx.stroke();
                 ctx.setLineDash([]);
             }
         }
 
-        let lastTime = Date.now();
-        async function gameLoop() {
-            const now = Date.now();
-            const dt = Math.min((now - lastTime) / 1000, 0.016);
-            lastTime = now;
-
-            if (gameRunning || isDragging) {
-                await updateGame(dt);
+        async function loop() {
+            if (!busy && invoke) {
+                busy = true;
+                try {
+                    gs = await invoke('update_game', { dt: 1 / 60 });
+                } finally {
+                    busy = false;
+                }
             }
-            drawGame();
-            requestAnimationFrame(gameLoop);
-        }
-
-        // Start game when ready
-        async function start() {
-            await initGame();
-            gameLoop();
-        }
-
-            // Start game when ready
-            async function start() {
-                await initGame();
-                gameLoop();
+            if (gs) {
+                draw();
+                updateUI();
             }
-
-            start();
+            requestAnimationFrame(loop);
         }
+
+        function start() {
+            const tauri = window.__TAURI__;
+            if (!tauri) {
+                setTimeout(start, 100);
+                return;
+            }
+            invoke = tauri.core.invoke;
+            invoke('init_game').then((s) => { gs = s; requestAnimationFrame(loop); });
+        }
+
+        start();
     </script>
 </body>
 </html>
-
